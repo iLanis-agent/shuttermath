@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ShutterMath</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0f141b; color: #e8eef5; max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { margin: 0 0 4px; }
+  p.sub { color: #9fb0c3; margin: 0 0 20px; }
+  .presets { margin: 0 0 20px; }
+  .presets button { background: #1c2530; color: #9fc2e8; border: 1px solid #2d3b4d; border-radius: 999px; padding: 8px 16px; margin: 0 8px 8px 0; cursor: pointer; font-size: .9rem; }
+  .presets button:hover { background: #253243; }
+  section { background: #16202c; border: 1px solid #243143; border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  h2 { margin: 0 0 14px; font-size: 1.05rem; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; }
+  label { display: block; font-size: .8rem; color: #9fb0c3; margin-bottom: 4px; }
+  input { background: #0f141b; border: 1px solid #2d3b4d; color: #e8eef5; border-radius: 8px; padding: 9px 10px; width: 110px; font-size: 1rem; }
+  .outs { display: flex; flex-wrap: wrap; gap: 14px; }
+  .out { background: #101922; border: 1px solid #243143; border-radius: 12px; padding: 14px 18px; min-width: 140px; flex: 1; }
+  .out .v { font-size: 1.4rem; font-weight: 700; color: #7fc4ff; }
+  .out .k { font-size: .8rem; color: #9fb0c3; margin-top: 4px; }
+  .wide { min-width: 240px; }
+  .wide .v { font-size: 1.05rem; line-height: 1.45; }
+</style>
+</head>
+<body>
+<h1>&#128247; ShutterMath</h1>
+<p class="sub">Photography exposure math - ten stops is not a mental-math problem.</p>
+<div class="presets" id="presets"></div>
+
+<section>
+  <h2>1. The exposure</h2>
+  <div class="row">
+    <div><label>ISO</label><input id="iso" type="number" step="100" value="100"></div>
+    <div><label>Aperture (f/)</label><input id="aperture" type="number" step="0.1" value="8"></div>
+    <div><label>Shutter (1/ s)</label><input id="shutterden" type="number" step="1" value="125"></div>
+  </div>
+  <div class="outs">
+    <div class="out"><div class="v" id="o-ev">-</div><div class="k">EV at ISO 100</div></div>
+    <div class="out"><div class="v" id="o-eviso">-</div><div class="k">EV at your ISO</div></div>
+    <div class="out wide"><div class="v" id="o-light">-</div><div class="k">Light verdict</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>2. ND filter</h2>
+  <div class="row">
+    <div><label>ND stops</label><input id="nd" type="number" step="1" value="10"></div>
+  </div>
+  <div class="outs">
+    <div class="out"><div class="v" id="o-ndshutter">-</div><div class="k">New shutter</div></div>
+    <div class="out wide"><div class="v" id="o-ndnote">-</div><div class="k">What to do</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>3. Stars</h2>
+  <div class="row">
+    <div><label>Focal length (mm)</label><input id="focal" type="number" step="1" value="24"></div>
+    <div><label>Crop factor</label><input id="crop" type="number" step="0.1" value="1"></div>
+  </div>
+  <div class="outs">
+    <div class="out"><div class="v" id="o-stars">-</div><div class="k">500-rule shutter</div></div>
+    <div class="out wide"><div class="v" id="o-starnote">-</div><div class="k">Note</div></div>
+  </div>
+</section>
+
+<script>
+// ShutterMath engine - photography exposure math. Pure functions, no DOM.
+(function (root) {
+  'use strict';
+
+  // Exposure Value at ISO 100: EV = log2(N^2 / t). N = f-number, t = seconds.
+  function ev100(aperture, shutterSec) {
+    if (aperture <= 0 || shutterSec <= 0) throw new Error('aperture and shutter must be positive');
+    return Math.log2(aperture * aperture / shutterSec);
+  }
+
+  // EV adjusts with ISO: EV at ISO S = EV100 - log2(S/100).
+  function evAtIso(aperture, shutterSec, iso) {
+    if (iso <= 0) throw new Error('iso must be positive');
+    return ev100(aperture, shutterSec) - Math.log2(iso / 100);
+  }
+
+  // Shutter seconds needed for a target EV at given aperture and ISO.
+  function shutterForEv(ev, aperture, iso) {
+    if (aperture <= 0 || iso <= 0) throw new Error('aperture and iso must be positive');
+    return (iso / 100) * aperture * aperture / Math.pow(2, ev);
+  }
+
+  // ND filter: new shutter = base * 2^stops.
+  function ndShutter(baseSec, stops) {
+    if (baseSec <= 0) throw new Error('base shutter must be positive');
+    return baseSec * Math.pow(2, stops);
+  }
+
+  // ND strength needed to stretch base shutter to target.
+  function ndStopsFor(baseSec, targetSec) {
+    if (baseSec <= 0 || targetSec <= 0) throw new Error('shutters must be positive');
+    return Math.log2(targetSec / baseSec);
+  }
+
+  // 500 rule: longest shutter (seconds) before stars trail. crop = sensor crop factor.
+  function starTrail(focalMm, crop) {
+    if (focalMm <= 0 || crop <= 0) throw new Error('focal and crop must be positive');
+    return 500 / (focalMm * crop);
+  }
+
+  // Equivalent exposure helpers: keep EV, change one leg.
+  // New shutter when ISO changes: t2 = t1 * (iso1 / iso2).
+  function shutterForIsoChange(shutterSec, isoFrom, isoTo) {
+    if (shutterSec <= 0 || isoFrom <= 0 || isoTo <= 0) throw new Error('positive values only');
+    return shutterSec * (isoFrom / isoTo);
+  }
+
+  // New aperture when shutter changes: N2 = N1 * sqrt(t2 / t1).
+  function apertureForShutterChange(aperture, shutterFrom, shutterTo) {
+    if (aperture <= 0 || shutterFrom <= 0 || shutterTo <= 0) throw new Error('positive values only');
+    return aperture * Math.sqrt(shutterTo / shutterFrom);
+  }
+
+  // Full stops between two shutter speeds.
+  function stopsBetween(t1, t2) {
+    if (t1 <= 0 || t2 <= 0) throw new Error('positive values only');
+    return Math.log2(t2 / t1);
+  }
+
+  // Friendly shutter label: '1/125 s' or '8.2 s' or '2 min 4 s'.
+  function fmtShutter(sec) {
+    if (sec < 0.5) return '1/' + Math.round(1 / sec) + ' s';
+    if (sec < 60) return (Math.round(sec * 10) / 10) + ' s';
+    var m = Math.floor(sec / 60), s = Math.round(sec % 60);
+    if (s === 60) { m += 1; s = 0; }
+    return m + ' min ' + s + ' s';
+  }
+
+  var api = {
+    ev100: ev100,
+    evAtIso: evAtIso,
+    shutterForEv: shutterForEv,
+    ndShutter: ndShutter,
+    ndStopsFor: ndStopsFor,
+    starTrail: starTrail,
+    shutterForIsoChange: shutterForIsoChange,
+    apertureForShutterChange: apertureForShutterChange,
+    stopsBetween: stopsBetween,
+    fmtShutter: fmtShutter
+  };
+  root.ShutterMath = api;
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+(function () {
+  'use strict';
+  var E = window.ShutterMath;
+  function num(id) { return parseFloat(document.getElementById(id).value) || 0; }
+  function set(id, v) { document.getElementById(id).textContent = v; }
+
+  function compute() {
+    var iso = num('iso'), ap = num('aperture'), den = num('shutterden');
+    if (iso <= 0 || ap <= 0 || den <= 0) {
+      ['o-ev','o-eviso','o-light','o-ndshutter','o-ndnote','o-stars','o-starnote'].forEach(function (id) { set(id, '-'); });
+      return;
+    }
+    var t = 1 / den;
+    var ev = E.ev100(ap, t);
+    var evIso = E.evAtIso(ap, t, iso);
+    set('o-ev', (Math.round(ev * 100) / 100).toFixed(2));
+    set('o-eviso', (Math.round(evIso * 100) / 100).toFixed(2));
+    var light;
+    if (evIso >= 15) light = 'harsh midday sun - sunny 16 territory';
+    else if (evIso >= 12) light = 'bright daylight';
+    else if (evIso >= 9) light = 'overcast or open shade';
+    else if (evIso >= 6) light = 'indoor window light';
+    else light = 'dim - tripod or fast glass needed';
+    set('o-light', light);
+    var nd = num('nd');
+    var ns = E.ndShutter(t, nd);
+    set('o-ndshutter', E.fmtShutter(ns));
+    set('o-ndnote', nd >= 6
+      ? 'Long-exposure territory - tripod, remote release, and cover the viewfinder.'
+      : nd > 0
+        ? 'Handholdable if the result stays above 1/focal - check the speed above.'
+        : 'No ND - the shutter above is your working speed.');
+    var focal = num('focal'), crop = num('crop');
+    if (focal > 0 && crop > 0) {
+      var st = E.starTrail(focal, crop);
+      set('o-stars', E.fmtShutter(st));
+      set('o-starnote', 'Longer than ' + E.fmtShutter(st) + ' and the stars start drawing lines at ' + focal + 'mm.');
+    } else {
+      set('o-stars', '-'); set('o-starnote', '-');
+    }
+  }
+
+  var presets = [
+    { name: 'Sunny 16 check', v: { iso: 100, aperture: 16, shutterden: 125, nd: 0, focal: 24, crop: 1 } },
+    { name: '10-stop waterfall', v: { iso: 100, aperture: 11, shutterden: 60, nd: 10, focal: 35, crop: 1 } },
+    { name: 'Indoor portrait', v: { iso: 800, aperture: 2.0, shutterden: 125, nd: 0, focal: 50, crop: 1.5 } },
+    { name: 'Milky way', v: { iso: 3200, aperture: 2.8, shutterden: 20, nd: 0, focal: 14, crop: 1 } }
+  ];
+  var holder = document.getElementById('presets');
+  presets.forEach(function (p) {
+    var b = document.createElement('button');
+    b.textContent = p.name;
+    b.addEventListener('click', function () {
+      Object.keys(p.v).forEach(function (k) {
+        var el = document.getElementById(k);
+        if (el) el.value = p.v[k];
+      });
+      compute();
+    });
+    holder.appendChild(b);
+  });
+
+  ['iso', 'aperture', 'shutterden', 'nd', 'focal', 'crop'].forEach(function (id) {
+    var el = document.getElementById(id);
+    el.addEventListener('input', compute);
+    el.addEventListener('change', compute);
+  });
+  compute();
+})();
+</script>
+</body>
+</html>
